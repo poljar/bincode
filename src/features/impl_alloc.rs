@@ -30,6 +30,9 @@ impl VecWriter {
 
 impl enc::write::Writer for VecWriter {
     fn write(&mut self, bytes: &[u8]) -> Result<(), EncodeError> {
+        self.inner
+            .try_reserve(bytes.len())
+            .map_err(|inner| EncodeError::OutOfMemory { inner })?;
         self.inner.extend_from_slice(bytes);
         Ok(())
     }
@@ -54,7 +57,11 @@ where
         let len = crate::de::decode_slice_len(&mut decoder)?;
         decoder.claim_container_read::<T>(len)?;
 
-        let mut map = BinaryHeap::with_capacity(len);
+        let mut map = BinaryHeap::new();
+        // TODO:
+        // map.try_reserve(len).map_err(|inner| DecodeError::OutOfMemory { inner })?;
+        map.reserve(len);
+
         for _ in 0..len {
             // See the documentation on `unclaim_bytes_read` as to why we're doing this here
             decoder.unclaim_bytes_read(core::mem::size_of::<T>());
@@ -157,7 +164,10 @@ where
         let len = crate::de::decode_slice_len(&mut decoder)?;
         decoder.claim_container_read::<T>(len)?;
 
-        let mut map = VecDeque::with_capacity(len);
+        let mut map = VecDeque::new();
+        map.try_reserve(len)
+            .map_err(|inner| DecodeError::OutOfMemory { inner })?;
+
         for _ in 0..len {
             // See the documentation on `unclaim_bytes_read` as to why we're doing this here
             decoder.unclaim_bytes_read(core::mem::size_of::<T>());
@@ -190,7 +200,10 @@ where
         let len = crate::de::decode_slice_len(&mut decoder)?;
         decoder.claim_container_read::<T>(len)?;
 
-        let mut vec = Vec::with_capacity(len);
+        let mut vec = Vec::new();
+        vec.try_reserve(len)
+            .map_err(|inner| DecodeError::OutOfMemory { inner })?;
+
         for _ in 0..len {
             // See the documentation on `unclaim_bytes_read` as to why we're doing this here
             decoder.unclaim_bytes_read(core::mem::size_of::<T>());

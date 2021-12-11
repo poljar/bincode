@@ -1,5 +1,8 @@
 //! Errors that can be encounting by Encoding and Decoding.
 
+#[cfg(feature = "alloc")]
+use alloc::collections::TryReserveError;
+
 /// Errors that can be encountered by encoding a type
 #[non_exhaustive]
 #[derive(Debug)]
@@ -54,6 +57,13 @@ pub enum EncodeError {
     /// Serde provided bincode with a sequence without a length, which is not supported in bincode
     #[cfg(feature = "serde")]
     SequenceMustHaveLength,
+
+    /// bincode failed to allocate enough memory
+    #[cfg(feature = "alloc")]
+    OutOfMemory {
+        /// The inner error
+        inner: TryReserveError,
+    },
 }
 
 impl core::fmt::Display for EncodeError {
@@ -148,6 +158,13 @@ pub enum DecodeError {
     /// Serde tried decoding a borrowed value from an owned reader. Use `serde_decode_borrowed_from_*` instead
     #[cfg(feature = "serde")]
     CannotBorrowOwnedData,
+
+    /// bincode failed to allocate enough memory
+    #[cfg(feature = "alloc")]
+    OutOfMemory {
+        /// The inner error
+        inner: TryReserveError,
+    },
 }
 
 impl core::fmt::Display for DecodeError {

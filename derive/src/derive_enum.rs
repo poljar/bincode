@@ -1,12 +1,14 @@
 use super::FieldAttribute;
+use crate::CrateNameAttribute;
 use virtue::generate::{FnSelfArg, Generator, StreamBuilder};
 use virtue::parse::{EnumVariant, Fields};
 use virtue::prelude::*;
 
 const TUPLE_FIELD_PREFIX: &str = "field_";
 
-pub struct DeriveEnum {
+pub(crate) struct DeriveEnum {
     pub variants: Vec<EnumVariant>,
+    pub crate_name: CrateNameAttribute,
 }
 
 impl DeriveEnum {
@@ -20,17 +22,22 @@ impl DeriveEnum {
 
     pub fn generate_encode(self, generator: &mut Generator) -> Result<()> {
         generator
-            .impl_for("bincode::Encode")?
+            .impl_for(self.crate_name.ty("Encode"))?
             .modify_generic_constraints(|generics, where_constraints| {
                 for g in generics.iter_generics() {
-                    where_constraints.push_constraint(g, "bincode::Encode").unwrap();
+                    where_constraints
+                        .push_constraint(g, self.crate_name.ty("Encode"))
+                        .unwrap();
                 }
             })
             .generate_fn("encode")
-            .with_generic("E", ["bincode::enc::Encoder"])
+            .with_generic_deps("E", [self.crate_name.ty("enc::Encoder")])
             .with_self_arg(FnSelfArg::RefSelf)
             .with_arg("encoder", "&mut E")
-            .with_return_type("core::result::Result<(), bincode::error::EncodeError>")
+            .with_return_type(format!(
+                "core::result::Result<(), {}::error::EncodeError>",
+                self.crate_name.name
+            ))
             .body(|fn_body| {
                 fn_body.ident_str("match");
                 fn_body.ident_str("self");
@@ -76,7 +83,10 @@ impl DeriveEnum {
                         // }
                         match_body.group(Delimiter::Brace, |body| {
                             // variant index
-                            body.push_parsed("<u32 as bincode::Encode>::encode")?;
+                            body.push_parsed(format!(
+                                "<u32 as {}::Encode>::encode",
+                                self.crate_name.name
+                            ))?;
                             body.group(Delimiter::Parenthesis, |args| {
                                 args.punct('&');
                                 args.group(Delimiter::Parenthesis, |num| {
@@ -91,17 +101,21 @@ impl DeriveEnum {
                             body.punct(';');
                             // If we have any fields, encode them all one by one
                             for field_name in variant.fields.names() {
-                                if field_name.attributes().has_attribute(FieldAttribute::WithSerde)? {
+                                if field_name
+                                    .attributes()
+                                    .has_attribute(FieldAttribute::WithSerde)?
+                                {
                                     body.push_parsed(format!(
-                                        "bincode::Encode::encode(&bincode::serde::Compat({}), encoder)?;",
+                                        "{0}::Encode::encode(&{0}::serde::Compat({1}), encoder)?;",
+                                        self.crate_name.name,
                                         field_name.to_string_with_prefix(TUPLE_FIELD_PREFIX),
                                     ))?;
                                 } else {
                                     body.push_parsed(format!(
-                                        "bincode::Encode::encode({}, encoder)?;",
+                                        "{0}::Encode::encode({1}, encoder)?;",
+                                        self.crate_name.name,
                                         field_name.to_string_with_prefix(TUPLE_FIELD_PREFIX),
-                                    ))
-                                    ?;
+                                    ))?;
                                 }
                             }
                             body.push_parsed("Ok(())")?;
@@ -142,7 +156,7 @@ impl DeriveEnum {
         result.puncts("=>");
         result.ident_str("Err");
         result.group(Delimiter::Parenthesis, |err_inner| {
-            err_inner.push_parsed("bincode::error::DecodeError::UnexpectedVariant")?;
+            err_inner.push_parsed(self.crate_name.ty("error::DecodeError::UnexpectedVariant"))?;
             err_inner.group(Delimiter::Brace, |variant_inner| {
                 variant_inner.ident_str("found");
                 variant_inner.punct(':');
@@ -159,7 +173,8 @@ impl DeriveEnum {
 
                 if self.variants.iter().any(|i| i.has_fixed_value()) {
                     // we have fixed values, implement AllowedEnumVariants::Allowed
-                    variant_inner.push_parsed("bincode::error::AllowedEnumVariants::Allowed")?;
+                    variant_inner
+                        .push_parsed(self.crate_name.ty("error::AllowedEnumVariants::Allowed"))?;
                     variant_inner.group(Delimiter::Parenthesis, |allowed_inner| {
                         allowed_inner.punct('&');
                         allowed_inner.group(Delimiter::Bracket, |allowed_slice| {
@@ -176,7 +191,8 @@ impl DeriveEnum {
                 } else {
                     // no fixed values, implement a range
                     variant_inner.push_parsed(format!(
-                        "bincode::error::AllowedEnumVariants::Range {{ min: 0, max: {} }}",
+                        "{0}::error::AllowedEnumVariants::Range {{ min: 0, max: {1} }}",
+                        self.crate_name.name,
                         self.variants.len() - 1
                     ))?;
                 }
@@ -193,24 +209,28 @@ impl DeriveEnum {
         let enum_name = generator.target_name().to_string();
 
         generator
-            .impl_for("bincode::Decode")?
+            .impl_for(self.crate_name.ty("Decode"))?
             .modify_generic_constraints(|generics, where_constraints| {
                 for g in generics.iter_generics() {
-                    where_constraints.push_constraint(g, "bincode::Decode").unwrap();
+                    where_constraints.push_constraint(g, self.crate_name.ty("Decode")).unwrap();
                 }
             })
             .generate_fn("decode")
-            .with_generic("D", ["bincode::de::Decoder"])
+            .with_generic_deps("D", [self.crate_name.ty("de::Decoder")])
             .with_arg("decoder", "&mut D")
-            .with_return_type("core::result::Result<Self, bincode::error::DecodeError>")
+            .with_return_type(format!("core::result::Result<Self, {}::error::DecodeError>", self.crate_name.name))
             .body(|fn_builder| {
                 if self.variants.is_empty() {
-                    fn_builder.push_parsed("core::result::Result::Err(bincode::error::DecodeError::EmptyEnum { type_name: core::any::type_name::<Self>() })")?;
+                    fn_builder.push_parsed(format!(
+                        "core::result::Result::Err({}::error::DecodeError::EmptyEnum {{ type_name: core::any::type_name::<Self>() }})",
+                        self.crate_name.name
+                    ))?;
                 } else {
                     fn_builder
-                        .push_parsed(
-                            "let variant_index = <u32 as bincode::Decode>::decode(decoder)?;",
-                        )?;
+                        .push_parsed(format!(
+                            "let variant_index = <u32 as {}::Decode>::decode(decoder)?;",
+                            self.crate_name.name
+                        ))?;
                     fn_builder.push_parsed("match variant_index")?;
                     fn_builder.group(Delimiter::Brace, |variant_case| {
                         for (mut variant_index, variant) in self.iter_fields() {
@@ -242,10 +262,16 @@ impl DeriveEnum {
                                         variant_body.punct(':');
                                         if field.attributes().has_attribute(FieldAttribute::WithSerde)? {
                                             variant_body
-                                                .push_parsed("<bincode::serde::Compat<_> as bincode::Decode>::decode(decoder)?.0,")?;
+                                                .push_parsed(format!(
+                                                    "<{0}::serde::Compat<_> as {0}::Decode>::decode(decoder)?.0,",
+                                                    self.crate_name.name
+                                                ))?;
                                         } else {
                                             variant_body
-                                                .push_parsed("bincode::Decode::decode(decoder)?,")?;
+                                                .push_parsed(format!(
+                                                    "{}::Decode::decode(decoder)?,",
+                                                    self.crate_name.name
+                                                ))?;
                                         }
                                     }
                                     Ok(())
@@ -266,25 +292,29 @@ impl DeriveEnum {
 
     pub fn generate_borrow_decode(self, generator: &mut Generator) -> Result<()> {
         // Remember to keep this mostly in sync with generate_decode
+        let crate_name = &self.crate_name;
 
         let enum_name = generator.target_name().to_string();
 
-        generator.impl_for_with_lifetimes("bincode::BorrowDecode", &["__de"])?
+        generator.impl_for_with_lifetimes(crate_name.ty("BorrowDecode"), ["__de"])?
             .modify_generic_constraints(|generics, where_constraints| {
                 for g in generics.iter_generics() {
-                    where_constraints.push_constraint(g, "bincode::enc::BorrowDecode").unwrap();
+                    where_constraints.push_constraint(g, crate_name.ty("enc::BorrowDecode")).unwrap();
                 }
             })
             .generate_fn("borrow_decode")
-            .with_generic("D", ["bincode::de::BorrowDecoder<'__de>"])
+            .with_generic_deps("D", [crate_name.ty("de::BorrowDecoder<'__de>")])
             .with_arg("decoder", "&mut D")
-            .with_return_type("core::result::Result<Self, bincode::error::DecodeError>")
+            .with_return_type(format!("core::result::Result<Self, {}::error::DecodeError>", crate_name.name))
             .body(|fn_builder| {
                 if self.variants.is_empty() {
-                    fn_builder.push_parsed("core::result::Result::Err(bincode::error::DecodeError::EmptyEnum { type_name: core::any::type_name::<Self>() })")?;
+                    fn_builder.push_parsed(format!(
+                        "core::result::Result::Err({}::error::DecodeError::EmptyEnum {{ type_name: core::any::type_name::<Self>() }})",
+                        crate_name.name
+                    ))?;
                 } else {
                     fn_builder
-                        .push_parsed("let variant_index = <u32 as bincode::Decode>::decode(decoder)?;")?;
+                        .push_parsed(format!("let variant_index = <u32 as {}::Decode>::decode(decoder)?;", crate_name.name))?;
                     fn_builder.push_parsed("match variant_index")?;
                     fn_builder.group(Delimiter::Brace, |variant_case| {
                         for (mut variant_index, variant) in self.iter_fields() {
@@ -316,9 +346,9 @@ impl DeriveEnum {
                                         variant_body.punct(':');
                                         if field.attributes().has_attribute(FieldAttribute::WithSerde)? {
                                             variant_body
-                                                .push_parsed("<bincode::serde::BorrowCompat<_> as bincode::BorrowDecode>::borrow_decode(decoder)?.0,")?;
+                                                .push_parsed(format!("<{0}::serde::BorrowCompat<_> as {0}::BorrowDecode>::borrow_decode(decoder)?.0,", crate_name.name))?;
                                         } else {
-                                            variant_body.push_parsed("bincode::BorrowDecode::borrow_decode(decoder)?,")?;
+                                            variant_body.push_parsed(format!("{}::BorrowDecode::borrow_decode(decoder)?,", crate_name.name))?;
                                         }
                                     }
                                     Ok(())

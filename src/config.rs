@@ -39,11 +39,18 @@ use core::marker::PhantomData;
 /// [skip_fixed_array_length]: #method.skip_fixed_array_length
 /// [write_fixed_array_length]: #method.write_fixed_array_length
 #[derive(Copy, Clone)]
-pub struct Configuration<E = LittleEndian, I = Varint, A = SkipFixedArrayLength, L = NoLimit> {
+pub struct Configuration<
+    E = LittleEndian,
+    I = Varint,
+    A = SkipFixedArrayLength,
+    L = NoLimit,
+    LE = U64SliceLengthEncoding,
+> {
     _e: PhantomData<E>,
     _i: PhantomData<I>,
     _a: PhantomData<A>,
     _l: PhantomData<L>,
+    _le: PhantomData<LE>,
 }
 
 /// The default config for bincode 2.0. By default this will be:
@@ -58,16 +65,18 @@ pub const fn standard() -> Configuration {
 /// - Little endian
 /// - Fixed int length encoding
 /// - Write array lengths
-pub const fn legacy() -> Configuration<LittleEndian, Fixint, WriteFixedArrayLength, NoLimit> {
+pub const fn legacy(
+) -> Configuration<LittleEndian, Fixint, WriteFixedArrayLength, NoLimit, U64SliceLengthEncoding> {
     generate()
 }
 
-const fn generate<_E, _I, _A, _L>() -> Configuration<_E, _I, _A, _L> {
+const fn generate<_E, _I, _A, _L, _LE>() -> Configuration<_E, _I, _A, _L, _LE> {
     Configuration {
         _e: PhantomData,
         _i: PhantomData,
         _a: PhantomData,
         _l: PhantomData,
+        _le: PhantomData,
     }
 }
 
@@ -80,7 +89,7 @@ const fn generate<_E, _I, _A, _L>() -> Configuration<_E, _I, _A, _L> {
 // - Add this generic to _every_ function in `Configuration`
 // - Add your new methods
 
-impl<E, I, A, L> Configuration<E, I, A, L> {
+impl<E, I, A, L, LE> Configuration<E, I, A, L, LE> {
     /// Makes bincode encode all integer types in big endian.
     pub const fn with_big_endian(self) -> Configuration<BigEndian, I, A, L> {
         generate()
@@ -171,6 +180,20 @@ impl<E, I, A, L> Configuration<E, I, A, L> {
         generate()
     }
 
+    /// Write the length of arrays as an u32.
+    pub const fn with_u32_slice_length_encoding(
+        self,
+    ) -> Configuration<E, I, A, L, U32SliceLengthEncoding> {
+        generate()
+    }
+
+    /// Write the length of arrays as an u64.
+    pub const fn with_u64_slice_length_encoding(
+        self,
+    ) -> Configuration<E, I, A, L, U64SliceLengthEncoding> {
+        generate()
+    }
+
     /// Sets the byte limit to `limit`.
     pub const fn with_limit<const N: usize>(self) -> Configuration<E, I, A, Limit<N>> {
         generate()
@@ -188,6 +211,7 @@ pub trait Config:
     + InternalArrayLengthConfig
     + InternalIntEncodingConfig
     + InternalLimitConfig
+    + InternalSliceLenEncodingConfig
     + Copy
     + Clone
 {
@@ -198,6 +222,7 @@ impl<T> Config for T where
         + InternalArrayLengthConfig
         + InternalIntEncodingConfig
         + InternalLimitConfig
+        + InternalSliceLenEncodingConfig
         + Copy
         + Clone
 {
@@ -237,6 +262,22 @@ impl InternalIntEncodingConfig for Varint {
 
 #[doc(hidden)]
 #[derive(Copy, Clone)]
+pub struct U32SliceLengthEncoding {}
+
+impl InternalSliceLenEncodingConfig for U32SliceLengthEncoding {
+    const SLICE_LEN_ENCODING: SliceLengthEncoding = SliceLengthEncoding::U32;
+}
+
+#[doc(hidden)]
+#[derive(Copy, Clone)]
+pub struct U64SliceLengthEncoding {}
+
+impl InternalSliceLenEncodingConfig for U64SliceLengthEncoding {
+    const SLICE_LEN_ENCODING: SliceLengthEncoding = SliceLengthEncoding::U64;
+}
+
+#[doc(hidden)]
+#[derive(Copy, Clone)]
 pub struct SkipFixedArrayLength {}
 
 impl InternalArrayLengthConfig for SkipFixedArrayLength {
@@ -272,7 +313,7 @@ mod internal {
         const ENDIAN: Endian;
     }
 
-    impl<E: InternalEndianConfig, I, A, L> InternalEndianConfig for Configuration<E, I, A, L> {
+    impl<E: InternalEndianConfig, I, A, L, LE> InternalEndianConfig for Configuration<E, I, A, L, LE> {
         const ENDIAN: Endian = E::ENDIAN;
     }
 
@@ -286,8 +327,8 @@ mod internal {
         const INT_ENCODING: IntEncoding;
     }
 
-    impl<E, I: InternalIntEncodingConfig, A, L> InternalIntEncodingConfig
-        for Configuration<E, I, A, L>
+    impl<E, I: InternalIntEncodingConfig, A, L, LE> InternalIntEncodingConfig
+        for Configuration<E, I, A, L, LE>
     {
         const INT_ENCODING: IntEncoding = I::INT_ENCODING;
     }
@@ -298,12 +339,28 @@ mod internal {
         Variable,
     }
 
+    pub trait InternalSliceLenEncodingConfig {
+        const SLICE_LEN_ENCODING: SliceLengthEncoding;
+    }
+
+    impl<E, I, A, L, LE: InternalSliceLenEncodingConfig> InternalSliceLenEncodingConfig
+        for Configuration<E, I, A, L, LE>
+    {
+        const SLICE_LEN_ENCODING: SliceLengthEncoding = LE::SLICE_LEN_ENCODING;
+    }
+
+    #[derive(PartialEq, Eq, Debug)]
+    pub enum SliceLengthEncoding {
+        U32,
+        U64,
+    }
+
     pub trait InternalArrayLengthConfig {
         const SKIP_FIXED_ARRAY_LENGTH: bool;
     }
 
-    impl<E, I, A: InternalArrayLengthConfig, L> InternalArrayLengthConfig
-        for Configuration<E, I, A, L>
+    impl<E, I, A: InternalArrayLengthConfig, L, LE> InternalArrayLengthConfig
+        for Configuration<E, I, A, L, LE>
     {
         const SKIP_FIXED_ARRAY_LENGTH: bool = A::SKIP_FIXED_ARRAY_LENGTH;
     }
@@ -312,7 +369,7 @@ mod internal {
         const LIMIT: Option<usize>;
     }
 
-    impl<E, I, A, L: InternalLimitConfig> InternalLimitConfig for Configuration<E, I, A, L> {
+    impl<E, I, A, L: InternalLimitConfig, LE> InternalLimitConfig for Configuration<E, I, A, L, LE> {
         const LIMIT: Option<usize> = L::LIMIT;
     }
 }

@@ -15,6 +15,9 @@ pub enum EncodeError {
         type_name: &'static str,
     },
 
+    /// The slice length doesn't fit into the encoded slice length type.
+    SliceLength(usize),
+
     /// An uncommon error occurred, see the inner text for more information
     Other(&'static str),
 
